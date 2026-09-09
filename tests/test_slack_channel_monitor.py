@@ -54,6 +54,58 @@ def test_post_message_sends_markdown_text(monkeypatch):
     assert "mrkdwn" not in posted["body"]
 
 
+def test_selected_profile_resolves_agent_and_display_metadata(monkeypatch):
+    helpers = load_slack_monitor_helpers()
+    settings = {
+        "active_profile": "active-profile",
+        "agent_settings": {"llm": {"model": "active-model"}},
+    }
+    selected = {"model": "anthropic/claude-sonnet-4-6", "api_key": "secret"}
+    monkeypatch.setenv("AUTOMATION_MODEL", "slack-profile")
+    monkeypatch.setitem(helpers, "_fetch_settings", lambda *_: settings)
+    monkeypatch.setitem(helpers, "_fetch_llm_profile", lambda *_: selected)
+
+    agent, profile, model = helpers["_get_agent_and_llm_provenance"](
+        "http://agent", "key"
+    )
+
+    assert agent["llm"] == selected
+    assert profile == "slack-profile"
+    assert model == "anthropic/claude-sonnet-4-6"
+
+
+def test_completed_response_includes_llm_provenance(monkeypatch):
+    helpers = load_slack_monitor_helpers()
+    monkeypatch.setattr(helpers["time"], "time", lambda: 100.0)
+    monkeypatch.setitem(helpers, "conversation_status", lambda *_: "finished")
+    monkeypatch.setitem(
+        helpers, "conversation_final_response", lambda *_: "Completed the request."
+    )
+    posted: list[str] = []
+    monkeypatch.setitem(
+        helpers,
+        "post_message",
+        lambda _token, _channel, text, thread_ts=None: posted.append(text) or "2.0",
+    )
+    rec = {
+        "conversation_id": "conv-1",
+        "channel_id": "C123",
+        "thread_ts": "1.0",
+        "last_activity": 0.0,
+        "llm_profile": "slack-profile",
+        "llm_model": "anthropic/claude-sonnet-4-6",
+    }
+
+    helpers["_check_conversation_completion"](
+        "C123:1.0", rec, "http://agent", "key", "xoxb-test", []
+    )
+
+    assert posted == [
+        "Completed the request.\n\n"
+        "LLM profile: `slack-profile` · Model: `anthropic/claude-sonnet-4-6`"
+    ]
+
+
 def test_followup_quiet_poll_is_capped_at_watch_expiry(monkeypatch):
     helpers = load_slack_monitor_helpers()
     monkeypatch.setattr(helpers["time"], "time", lambda: 950.0)

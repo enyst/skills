@@ -261,7 +261,8 @@ For each repository:
      paths, and symlinks skipped rather than materialised.
    - Starts an OpenHands conversation **whose working directory is that
      checkout**, with a review prompt carrying PR metadata, the exact head SHA,
-     and label event details.
+     label event details, and the LLM profile/model footer required in the
+     published review.
    - Posts an acknowledgement comment with the label event, head SHA, and
      conversation link.
    - Records the review in state with `status: "active"` and the checkout path.

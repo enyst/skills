@@ -20,6 +20,7 @@ This skill is activated by:
   checkout when the review ends, so nothing accumulates between runs
 - Publishes a real pull request review, with inline comments where a finding
   maps to a changed line, and verifies on GitHub that it landed
+- Shows the LLM profile and model in every published review or fallback result
 - Posts acknowledgement comments with AI disclosure
 - Configurable review tone and polling schedule
 

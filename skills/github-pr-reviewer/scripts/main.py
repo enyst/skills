@@ -26,7 +26,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 # Configuration. Two setup paths write it, and both end up here:
 #
@@ -628,14 +628,42 @@ def _fetch_settings(agent_url: str, api_key: str) -> dict:
         return json.loads(r.read())
 
 
-def _get_agent_dict(agent_url: str, api_key: str) -> dict:
+def _fetch_llm_profile(agent_url: str, api_key: str, profile_name: str) -> dict:
+    req = urllib.request.Request(
+        f"{agent_url}/api/profiles/{quote(profile_name, safe='')}",
+        headers={
+            "X-Session-API-Key": api_key,
+            "X-Expose-Secrets": "plaintext",
+        },
+    )
+    with urllib.request.urlopen(req) as r:
+        config = json.loads(r.read()).get("config")
+    if not isinstance(config, dict):
+        raise RuntimeError(f"LLM profile {profile_name!r} returned no configuration")
+    return config
+
+
+def _get_agent_and_llm_provenance(
+    agent_url: str, api_key: str
+) -> tuple[dict, str, str]:
     data = _fetch_settings(agent_url, api_key)
-    llm = data.get("agent_settings", {}).get("llm", {})
-    return {
-        "kind": "Agent",
-        "llm": llm,
-        "tools": [{"name": "terminal"}, {"name": "file_editor"}],
-    }
+    profile = os.environ.get("AUTOMATION_MODEL") or data.get("active_profile")
+    llm = (
+        _fetch_llm_profile(agent_url, api_key, profile)
+        if profile
+        else data.get("agent_settings", {}).get("llm", {})
+    )
+    profile_name = profile or "default"
+    model = llm.get("model") or "unknown"
+    return (
+        {
+            "kind": "Agent",
+            "llm": llm,
+            "tools": [{"name": "terminal"}, {"name": "file_editor"}],
+        },
+        profile_name,
+        model,
+    )
 
 
 def _get_mcp_config(agent_url: str, api_key: str) -> dict | None:
@@ -682,10 +710,11 @@ def create_conversation(
     api_key: str,
     initial_message: str,
     workspace_dir: Path,
+    agent: dict | None = None,
 ) -> str:
     payload: dict = {
         "workspace": {"working_dir": str(workspace_dir)},
-        "agent": _get_agent_dict(agent_url, api_key),
+        "agent": agent or _get_agent_and_llm_provenance(agent_url, api_key)[0],
         "initial_message": {"content": [{"text": initial_message}]},
     }
     secrets = _build_secrets_payload(agent_url, api_key)
@@ -749,6 +778,18 @@ def _with_ai_disclosure(body: str) -> str:
     return f"{body}\n\n{disclosure}" if body else disclosure
 
 
+def _llm_provenance(profile: str, model: str) -> str:
+    return f"LLM profile: `{profile}` · Model: `{model}`"
+
+
+def _with_llm_provenance(body: str, profile: str, model: str) -> str:
+    provenance = _llm_provenance(profile, model)
+    body = (body or "").strip()
+    if provenance in body:
+        return body
+    return f"{body}\n\n{provenance}" if body else provenance
+
+
 def _load_repo_review_guide(workspace_dir: Path) -> str | None:
     """Read the repo-specific review guide from the checked-out repository.
 
@@ -770,7 +811,15 @@ def _load_repo_review_guide(workspace_dir: Path) -> str | None:
     return None
 
 
-def _build_review_prompt(repo: str, pr: dict, head_sha: str, label_event: dict, repo_review_guide: str | None = None) -> str:
+def _build_review_prompt(
+    repo: str,
+    pr: dict,
+    head_sha: str,
+    label_event: dict,
+    repo_review_guide: str | None = None,
+    llm_profile: str = "default",
+    llm_model: str = "unknown",
+) -> str:
     number = pr.get("number", "?")
     title = pr.get("title", "(no title)")
     body = (pr.get("body") or "").strip() or "(no description)"
@@ -827,10 +876,12 @@ def _build_review_prompt(repo: str, pr: dict, head_sha: str, label_event: dict, 
         "If the API rejects the inline positions, retry with every finding in the body and no `comments` array.\n"
         "6. Begin the review body with this disclosure: "
         "`_This review was posted by an AI agent (OpenHands)._`\n"
-        "7. End the review body with a verdict on its own line: either `✅ APPROVED` "
+        "7. End the assessment with a verdict on its own line: either `✅ APPROVED` "
         "or `🔄 CHANGES REQUESTED`.\n"
-        "8. If there are no material issues, still publish a review saying so, with the "
-        "disclosure and the verdict.\n"
+        "8. After the verdict, append this exact provenance footer on its own line:\n"
+        f"{_llm_provenance(llm_profile, llm_model)}\n"
+        "9. If there are no material issues, still publish a review saying so, with the "
+        "disclosure, verdict, and provenance footer.\n"
         f"\nReview instructions:\n{tone}{extra}{guide_section}\n\n"
         "After GitHub accepts the review, output exactly `GITHUB_REVIEW_POSTED`. "
         "If publishing still fails after the fallback in step 5, output the complete review text "
@@ -882,8 +933,21 @@ def _process_review_request(
         repo_review_guide = _load_repo_review_guide(workspace_dir)
         if repo_review_guide:
             print(f"  Injected repo review guide for PR #{number}")
-        prompt = _build_review_prompt(repo, pr, head_sha, label_event, repo_review_guide)
-        conv_id = create_conversation(agent_url, api_key, prompt, workspace_dir)
+        agent, llm_profile, llm_model = _get_agent_and_llm_provenance(
+            agent_url, api_key
+        )
+        prompt = _build_review_prompt(
+            repo,
+            pr,
+            head_sha,
+            label_event,
+            repo_review_guide,
+            llm_profile,
+            llm_model,
+        )
+        conv_id = create_conversation(
+            agent_url, api_key, prompt, workspace_dir, agent=agent
+        )
     except Exception as exc:
         # The claim is dropped so the next poll retries this label event. The
         # checkout goes with it rather than being left behind.
@@ -899,6 +963,8 @@ def _process_review_request(
             "status": "active",
             "conversation_id": conv_id,
             "workspace_dir": str(workspace_dir),
+            "llm_profile": llm_profile,
+            "llm_model": llm_model,
             "last_activity": time.time(),
         }
     )
@@ -972,14 +1038,20 @@ def _check_conversation_completion(
     except Exception:
         final = ""
 
+    llm_profile = rec.get("llm_profile", "default")
+    llm_model = rec.get("llm_model", "unknown")
     if status in {"error", "stuck"}:
         _post_github_comment(
             github_token,
             repo,
             pr_number,
-            _with_ai_disclosure(
-                f"⚠️ **OpenHands PR Reviewer encountered a problem** at commit `{reviewed_sha[:12]}` "
-                f"(status: `{status}`).\n\n{final}".strip()
+            _with_llm_provenance(
+                _with_ai_disclosure(
+                    f"⚠️ **OpenHands PR Reviewer encountered a problem** at commit `{reviewed_sha[:12]}` "
+                    f"(status: `{status}`).\n\n{final}".strip()
+                ),
+                llm_profile,
+                llm_model,
             ),
         )
     elif _matching_review_exists(github_token, repo, pr_number, reviewed_sha):
@@ -991,9 +1063,13 @@ def _check_conversation_completion(
             github_token,
             repo,
             pr_number,
-            _with_ai_disclosure(
-                final
-                or f"✅ **OpenHands completed the review for commit `{reviewed_sha[:12]}`.** No review text was produced."
+            _with_llm_provenance(
+                _with_ai_disclosure(
+                    final
+                    or f"✅ **OpenHands completed the review for commit `{reviewed_sha[:12]}`.** No review text was produced."
+                ),
+                llm_profile,
+                llm_model,
             ),
         )
         print(f"  PR #{pr_number}: no review found on GitHub; posted the result as a comment")
