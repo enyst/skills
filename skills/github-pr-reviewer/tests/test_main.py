@@ -268,7 +268,7 @@ class TestMatchingReviewExists(unittest.TestCase):
             return main._matching_review_exists("token", "owner/repo", 7, "abc123")
 
     def test_true_for_our_review_at_this_commit(self):
-        self.assertTrue(self._exists([{"user": {"login": "Review-Bot"}, "commit_id": "abc123"}]))
+        self.assertTrue(self._exists([{"user": {"login": "Review-Bot"}, "commit_id": "abc123", "state": "COMMENTED"}]))
 
     def test_false_for_someone_elses_review(self):
         self.assertFalse(self._exists([{"user": {"login": "human"}, "commit_id": "abc123"}]))
@@ -276,9 +276,10 @@ class TestMatchingReviewExists(unittest.TestCase):
     def test_false_for_our_review_at_another_commit(self):
         self.assertFalse(self._exists([{"user": {"login": "review-bot"}, "commit_id": "older"}]))
 
-    def test_false_when_the_listing_fails(self):
+    def test_listing_failure_is_reported_to_the_caller(self):
         with patch.object(main, "_github_paginate", side_effect=RuntimeError("boom")):
-            self.assertFalse(main._matching_review_exists("token", "owner/repo", 7, "abc123"))
+            with self.assertRaises(RuntimeError):
+                main._matching_review_exists("token", "owner/repo", 7, "abc123")
 
 
 # ── Claiming a label event before the review starts ────────────────────────────

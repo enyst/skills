@@ -273,9 +273,12 @@ For each repository:
    - Suppresses stale results if the PR head SHA changed after the review was
      queued.
    - When the conversation reaches `idle`, `finished`, `error`, or `stuck`,
-     asks GitHub whether a review by the token's own user exists for that head
-     SHA. If it does, the review is complete. If it does not, the agent's final
-     response is posted as a comment so the work is not lost.
+     verifies a submitted review by the token's own user at that head SHA,
+     submitted since this conversation started, and repairs a missing or
+     incorrect LLM provenance footer before marking the review complete.
+     If no matching review exists, the agent's final response is posted as a
+     comment with provenance. Failed verification or publication is retried
+     on the next poll.
    - Abandons a conversation that has not reached a terminal status within two
      hours, so its checkout can be reclaimed.
 6. Removes the checkout of every finished review, but only after confirming the

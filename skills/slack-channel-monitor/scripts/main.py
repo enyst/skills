@@ -33,6 +33,7 @@ Optional secret:
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -515,8 +516,17 @@ def _fetch_llm_profile(agent_url: str, api_key: str, profile_name: str) -> dict:
     )
     with urllib.request.urlopen(req) as r:
         config = json.loads(r.read()).get("config")
-    if not isinstance(config, dict):
+    if (
+        not isinstance(config, dict)
+        or not isinstance(config.get("model"), str)
+        or not config["model"].strip()
+    ):
         raise RuntimeError(f"LLM profile {profile_name!r} returned no configuration")
+    if config.get("provider_connection_id") and not config.get("api_key"):
+        raise RuntimeError(
+            f"LLM profile {profile_name!r} has unresolved provider credentials; "
+            "update the Agent Server to a version that resolves plaintext profile reads"
+        )
     return config
 
 
@@ -526,12 +536,19 @@ def _get_agent_and_llm_provenance(
     """Resolve the automation's profile and return its agent plus display data."""
     data = _fetch_settings(agent_url, api_key)
     profile = os.environ.get("AUTOMATION_MODEL") or data.get("active_profile")
-    llm = (
-        _fetch_llm_profile(agent_url, api_key, profile)
-        if profile
-        else data.get("agent_settings", {}).get("llm", {})
-    )
-    profile_name = profile or "default"
+    llm = data.get("agent_settings", {}).get("llm", {})
+    profile_name = data.get("active_profile") or "default"
+    if profile:
+        try:
+            llm = _fetch_llm_profile(agent_url, api_key, profile)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+            if profile == data.get("active_profile"):
+                profile_name = "default"
+            print(f"LLM profile {profile!r} was not found; using default LLM settings")
+        else:
+            profile_name = profile
     model = llm.get("model") or "unknown"
     return (
         {
@@ -664,9 +681,11 @@ def _llm_provenance(profile: str, model: str) -> str:
 
 def _with_llm_provenance(body: str, profile: str, model: str) -> str:
     provenance = _llm_provenance(profile, model)
-    body = (body or "").strip()
-    if provenance in body:
-        return body
+    body = "\n".join(
+        line
+        for line in (body or "").splitlines()
+        if not re.fullmatch(r"LLM profile: .* · Model: .*", line.strip())
+    ).strip()
     return f"{body}\n\n{provenance}" if body else provenance
 
 
