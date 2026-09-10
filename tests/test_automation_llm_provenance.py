@@ -96,9 +96,9 @@ def test_missing_profile_uses_default_with_accurate_provenance(
 
     assert agent["llm"] == settings["agent_settings"]["llm"]
     assert model == "openai/default"
-    assert profile == (
-        "default" if selected == "default-profile" else "default-profile"
-    )
+    # The active pointer can drift from the concrete default settings, so a
+    # fallback must not claim to have loaded that named profile.
+    assert profile == "default"
 
 
 @pytest.mark.parametrize("status", [401, 403, 500])

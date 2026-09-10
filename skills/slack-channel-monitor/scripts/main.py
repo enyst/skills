@@ -537,15 +537,13 @@ def _get_agent_and_llm_provenance(
     data = _fetch_settings(agent_url, api_key)
     profile = os.environ.get("AUTOMATION_MODEL") or data.get("active_profile")
     llm = data.get("agent_settings", {}).get("llm", {})
-    profile_name = data.get("active_profile") or "default"
+    profile_name = "default"
     if profile:
         try:
             llm = _fetch_llm_profile(agent_url, api_key, profile)
         except urllib.error.HTTPError as exc:
             if exc.code != 404:
                 raise
-            if profile == data.get("active_profile"):
-                profile_name = "default"
             print(f"LLM profile {profile!r} was not found; using default LLM settings")
         else:
             profile_name = profile
